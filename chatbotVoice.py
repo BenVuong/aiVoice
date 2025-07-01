@@ -1,9 +1,13 @@
 import soundcard as sc
+from storeLongTermMemory import archiveOldMessages
 from sqlalchemy import create_engine
 import io
 import gradio as gr
 import os
-from langchain_openai import ChatOpenAI
+
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client import QdrantClient
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 import soundfile as sf
 from openai import OpenAI
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -17,27 +21,66 @@ from elevenlabs.client import ElevenLabs
 from elevenlabs import play
 from langchain.agents import create_openai_functions_agent, AgentExecutor
 from composio_langchain import ComposioToolSet
+from langchain.tools import tool
+
+from browser_use.llm import ChatOpenAI as browserChat
+from browser_use import Agent
+import asyncio
 
 load_dotenv()
 elevenlabsAPI = os.getenv('ELEVENLABS_API_KEY')
 elevenLabsClient = ElevenLabs(api_key=elevenlabsAPI
                              )
-
+qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"),api_key=os.getenv("QDRANT_API_KEY")) 
 client = OpenAI()
 sample_rate = 44100
 duration = 5  # This duration might not be directly used for recording, but good to keep if you have other uses for it.
-
+embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"),api_key=os.getenv("QDRANT_API_KEY")) 
+vectorStore = QdrantVectorStore(client=qdrant_client, collection_name="LongTermMemory",embedding=embeddings)
 human_template = f"{{userInput}}"
 prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a helpful personal assistant. Keep your responses concise and short. Reply in a snarky and funny manner"),
+    ("system", """You are a helpful personal assistant. Keep your responses concise and short. Reply in a snarky and funny manner
+                As you chat with the user your old messages will be stored in Qdrant vector database as long term memory
+                If the user asks you to complete a task by opening up a browswer use the useBrowserSearch tool and pass in the user's requested task as the parameter
+     """),
     MessagesPlaceholder(variable_name="history"),
     ("human", human_template),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
 ])
-composio_toolset = ComposioToolSet(api_key=os.getenv("COMPOSIO_API_KEY"))
-tools = composio_toolset.get_tools(actions=['GOOGLETASKS_CREATE_TASK_LIST', 'GOOGLETASKS_GET_TASK_LIST','GOOGLETASKS_INSERT_TASK'])
 
-llm = ChatOpenAI(model="gpt-4o-mini")
+@tool
+def longTermMemorySearch(query: str) -> str:
+    """
+    Use this tool to recall longterm memory by querying for past messages"""
+    results = vectorStore.similarity_search_with_score(query, k=3, score_threshold=0.25)
+    return(results)
+
+async def browser(task: str):
+    agent = Agent(
+        task=task,
+        llm=browserChat(model="gpt-4.1"),
+    )
+    result = await agent.run()
+     # Display all the thinking/reasoning
+
+    
+    # print("\n=== FINAL RESULT ===")
+    # print(result.final_result())
+    return(result.final_result())
+
+@tool
+def useBrowserSearch(instruction: str) -> str:
+   """Use this tool to up an internet browser to complete a task. Just input the task in as the instruction argument"""
+   results =  asyncio.run(browser(instruction))
+   return(results)
+
+
+
+composio_toolset = ComposioToolSet(api_key=os.getenv("COMPOSIO_API_KEY"))
+composioTools = composio_toolset.get_tools(actions=['GOOGLETASKS_CREATE_TASK_LIST', 'GOOGLETASKS_GET_TASK_LIST','GOOGLETASKS_INSERT_TASK'])
+tools = composioTools +[useBrowserSearch] 
+llm = ChatOpenAI(model="gpt-4.1")
 agent = create_openai_functions_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, return_intermediate_steps=True,verbose=True)
 chain = prompt | llm
@@ -49,7 +92,14 @@ chain_with_history = RunnableWithMessageHistory(
     history_messages_key="history",
 )
 
+
+
+
+
 def chatWithVoice(audio):
+    chatMessages = SQLChatMessageHistory(session_id="21312423456896456", connection=engine).get_messages()
+    if(len(chatMessages)>=4):
+        archiveOldMessages(2, "21312423456896456")
     if audio is None:
         return "", "", None # Handle cases where no audio is recorded (e.g., if user releases immediately)
 
