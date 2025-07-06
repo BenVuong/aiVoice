@@ -1,13 +1,15 @@
 import soundcard as sc
+from kokoro import KPipeline
 from storeLongTermMemory import archiveOldMessages
 from sqlalchemy import create_engine
 import io
 import gradio as gr
 import os
-
+import configparser
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_ollama import ChatOllama
 import soundfile as sf
 from openai import OpenAI
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -19,16 +21,22 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 from dotenv import load_dotenv
 from elevenlabs.client import ElevenLabs
 from elevenlabs import play
-from langchain.agents import create_openai_functions_agent, AgentExecutor
+from langchain.agents import create_openai_functions_agent, AgentExecutor, create_tool_calling_agent
 from composio_langchain import ComposioToolSet
 from langchain.tools import tool
-
+import torchaudio as ta
+from chatterbox.tts import ChatterboxTTS
 from browser_use.llm import ChatOpenAI as browserChat
 from browser_use import Agent
 import asyncio
-
+import whisper
+import tempfile
+config = configparser.ConfigParser()
+config.read('config.ini')
 load_dotenv()
+whisperModel = whisper.load_model("tiny")
 elevenlabsAPI = os.getenv('ELEVENLABS_API_KEY')
+model = ChatterboxTTS.from_pretrained(device="cuda")
 elevenLabsClient = ElevenLabs(api_key=elevenlabsAPI
                              )
 qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"),api_key=os.getenv("QDRANT_API_KEY")) 
@@ -40,10 +48,7 @@ qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"),api_key=os.getenv("QDRA
 vectorStore = QdrantVectorStore(client=qdrant_client, collection_name="LongTermMemory",embedding=embeddings)
 human_template = f"{{userInput}}"
 prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a helpful personal assistant. Keep your responses concise and short. Reply in a snarky and funny manner
-                As you chat with the user your old messages will be stored in Qdrant vector database as long term memory
-                If the user asks you to complete a task by opening up a browswer use the useBrowserSearch tool and pass in the user's requested task as the parameter
-     """),
+    ("system", config['SystemPrompt']['personality'] + config['SystemPrompt']['toolInstructions']),
     MessagesPlaceholder(variable_name="history"),
     ("human", human_template),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -79,8 +84,9 @@ def useBrowserSearch(instruction: str) -> str:
 
 composio_toolset = ComposioToolSet(api_key=os.getenv("COMPOSIO_API_KEY"))
 composioTools = composio_toolset.get_tools(actions=['GOOGLETASKS_CREATE_TASK_LIST', 'GOOGLETASKS_GET_TASK_LIST','GOOGLETASKS_INSERT_TASK'])
-tools = composioTools +[useBrowserSearch] 
+tools = composioTools +[useBrowserSearch, longTermMemorySearch] 
 llm = ChatOpenAI(model="gpt-4.1")
+# llm = ChatOllama(model="qwen2.5:14b")
 agent = create_openai_functions_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, return_intermediate_steps=True,verbose=True)
 chain = prompt | llm
@@ -98,37 +104,32 @@ chain_with_history = RunnableWithMessageHistory(
 
 def chatWithVoice(audio):
     chatMessages = SQLChatMessageHistory(session_id="21312423456896456", connection=engine).get_messages()
-    if(len(chatMessages)>=4):
+    if(len(chatMessages)>=20):
         archiveOldMessages(2, "21312423456896456")
     if audio is None:
         return "", "", None # Handle cases where no audio is recorded (e.g., if user releases immediately)
 
     wavIO = io.BytesIO()
-    sf.write(wavIO, audio[1], sample_rate, format='wav')
-    wavIO.seek(0)
-    wavIO.name = "user_audio.wav"
+    sf.write("input/input.wav", audio[1], sample_rate, format='wav')
 
-    transcript = client.audio.transcriptions.create(
-        model="whisper-1",
-        file=wavIO
-    )
+    transcript = whisperModel.transcribe("input/input.wav")
 
-    response = chain_with_history.invoke({"userInput": transcript.text}, config={"configurable": {"session_id": "21312423456896456"}},)
+    response = chain_with_history.invoke({"userInput": transcript["text"]}, config={"configurable": {"session_id": "21312423456896456"}},)
 
-    audioOut = elevenLabsClient.text_to_speech.convert(
-        text=response["output"],
-        voice_id="flHkNRp1BlvT73UL6gyz",
-        model_id="eleven_flash_v2_5",
-        output_format="mp3_44100_128",
-    )
+    # pipeline = KPipeline(lang_code='a', device='cuda')
+    
+    # generator = pipeline(response["output"], voice='af_bella')
+    # for i, (gs, ps, audio) in enumerate(generator):
+    #     print(i, gs, ps)
+    #     #display(Audio(data=audio, rate=24000, autoplay=i==0))
+    #     sf.write(f'output/bot_response.mp3', audio, 24000)
 
-    output_path = "output/bot_response.mp3"
-    audio_bytes = b"".join(audioOut)
-
-    # Save to file
-    with open(output_path, "wb") as f:
-        f.write(audio_bytes)
-    return transcript.text, response["output"], output_path
+    model = ChatterboxTTS.from_pretrained(device="cuda")
+    wav = model.generate(response["output"],audio_prompt_path=config['VoiceSetting']['voice'])
+    ta.save("output/bot_response.wav", wav, model.sr)
+    output_path = "output/bot_response.wav"
+    
+    return transcript["text"], response["output"], output_path
 
 with gr.Blocks() as demo:
     gr.Markdown("## Voice Assistant Chabot")
