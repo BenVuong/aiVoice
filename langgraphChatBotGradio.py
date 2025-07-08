@@ -203,20 +203,39 @@ builder.add_edge("tools", "agent")
 memory = SqliteSaver(conn=sqlite3.connect("db/checkpoints.sqlite", check_same_thread=False))
 graph = builder.compile(checkpointer=memory)
 
-def pretty_print_stream_chunk(chunk):
-    for node, updates in chunk.items():
-        print(f"Update from node: {node}")
-        if "messages" in updates:
-            updates["messages"][-1].pretty_print()
-        else:
-            print(updates)
 
-        print("\n")
+# --- Gradio Interface ---
+def chat_function(message, history):
+    """
+    Function to integrate the LangGraph chatbot with the Gradio interface.
+    """
+    # Hardcoded config as requested, to use the same user and thread
+    config = {"configurable": {"user_id": "1", "thread_id": "1"}}
+    
+    final_response = ""
+    
+    # Stream the response from the graph
+    for chunk in graph.stream({"messages": [("user", message)]}, config=config, stream_mode="values"):
+        # The final AI response is in the 'agent' node's output
+        if isinstance(chunk["messages"][-1], AIMessage) and not chunk["messages"][-1].tool_calls:
+            final_response = chunk["messages"][-1].content
+            
+    return final_response
 
-
-config = {"configurable": {"user_id": "1", "thread_id": "3"}}
-
-while True:
-    userInput = input("User Input: ")
-    for chunk in graph.stream({"messages": [("user", userInput)]}, config=config):
-        pretty_print_stream_chunk(chunk)
+# Main execution block to launch the Gradio app
+if __name__ == "__main__":
+    # Create a Gradio ChatInterface
+    chat_ui = gr.ChatInterface(
+        fn=chat_function,
+        title="LangGraph Chatbot with Memory 🧠",
+        description="Interact with a chatbot that can remember past conversations and browse the web.",
+        examples=[
+            ["My favorite color is blue."],
+            ["What is my favorite color?"],
+            ["Use the browser to find out the current price of Bitcoin."],
+            ["Save the current price of Bitcoin to my memories."]
+        ]
+    )
+    
+    # Launch the web UI
+    chat_ui.launch()

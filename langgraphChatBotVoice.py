@@ -25,8 +25,10 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PayloadSchemaType
 from browser_use.llm import ChatOpenAI as browserChat
 from browser_use import Agent
-
-
+import configparser
+configFile = configparser.ConfigParser()
+configFile.read('config/config.ini')
+whisperModel = whisper.load_model("tiny")
 qdrantClient = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=os.getenv("QDRANT_API_KEY"))
 
 if not qdrantClient.collection_exists("LongTermMemory"):
@@ -199,24 +201,58 @@ builder.add_edge("load_memories", "agent")
 builder.add_conditional_edges("agent", route_tools)
 builder.add_edge("tools", "agent")
 
-# Compile the graph
+
 memory = SqliteSaver(conn=sqlite3.connect("db/checkpoints.sqlite", check_same_thread=False))
 graph = builder.compile(checkpointer=memory)
 
-def pretty_print_stream_chunk(chunk):
-    for node, updates in chunk.items():
-        print(f"Update from node: {node}")
-        if "messages" in updates:
-            updates["messages"][-1].pretty_print()
-        else:
-            print(updates)
-
-        print("\n")
 
 
-config = {"configurable": {"user_id": "1", "thread_id": "3"}}
+def chatWithVoice(audio, history):
+    """
+    Function to integrate the LangGraph chatbot with the Gradio interface.
+    """
+    if audio is None:
+        return "", "", None # Handle cases where no audio is recorded (e.g., if user releases immediately)
+    sample_rate = 44100
+    sf.write("input/input.wav", audio[1], sample_rate, format='wav')
+    transcript = whisperModel.transcribe("input/input.wav")
+    config = {"configurable": {"user_id": "1", "thread_id": "1"}}
+    
+    final_response = ""
+    
+    # Stream the response from the graph
+    for chunk in graph.stream({"messages": [("user", transcript["text"])]}, config=config, stream_mode="values"):
+        # The final AI response is in the 'agent' node's output
+        if isinstance(chunk["messages"][-1], AIMessage) and not chunk["messages"][-1].tool_calls:
+            final_response = chunk["messages"][-1].content
+            
+    model = ChatterboxTTS.from_pretrained(device="cuda")
+    output_path = "output/bot_response.wav"
+    wav = model.generate(final_response,audio_prompt_path=configFile['VoiceSetting']['voice'])
+    ta.save(output_path, wav, model.sr)
+    
 
-while True:
-    userInput = input("User Input: ")
-    for chunk in graph.stream({"messages": [("user", userInput)]}, config=config):
-        pretty_print_stream_chunk(chunk)
+    return transcript["text"], final_response, output_path
+
+with gr.Blocks() as demo:
+    gr.Markdown("## Voice Assistant Chabot")
+    with gr.Row():
+        # Changed the type to "filepath" for better handling with Whisper and Eleven Labs
+        # Added sources=["microphone"] and streaming=False for typical push-to-talk
+        mic = gr.Audio(type="numpy", label="Push to Talk", streaming=False, sources=["microphone"])
+        
+        # Remove the explicit "Send" button as it will be triggered by stop_recording
+        # btn = gr.Button("Send") 
+        
+        transcript_text = gr.Textbox(label="You said")
+        response_text = gr.Textbox(label="Bot says")
+        voice_output = gr.Audio(label="Bot Voice", type="filepath", autoplay=True)
+
+    # Attach the chatWithVoice function to the `stop_recording` event of the microphone
+    mic.stop_recording(
+        chatWithVoice,
+        inputs=[mic],
+        outputs=[transcript_text, response_text, voice_output]
+    )
+
+demo.launch()
