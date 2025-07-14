@@ -7,8 +7,10 @@ import uuid
 import sqlite3
 import whisper
 import torchaudio as ta
+from langchain_ollama import ChatOllama 
 from chatterbox.tts import ChatterboxTTS
 import soundfile as sf
+from composio_langchain import ComposioToolSet, Action, App
 import tiktoken
 from langchain_core.documents import Document
 from langchain_core.messages import get_buffer_string, AIMessage
@@ -60,6 +62,11 @@ async def browser(task: str):
     result = await agent.run()
     return result.final_result()
 
+# Initialize the Composio ToolSet
+composio_toolset = ComposioToolSet(os.getenv("COMPOSIO_API_KEY"))
+
+composioTools = composio_toolset.get_tools(actions=['GOOGLECALENDAR_CREATE_EVENT', 'GOOGLETASKS_LIST_TASK_LISTS','GOOGLETASKS_CREATE_TASK_LIST','GOOGLETASKS_GET_TASK_LIST', 'GOOGLETASKS_INSERT_TASK', 'GOOGLETASKS_DELETE_TASK', 'GOOGLECALENDAR_GET_CALENDAR'])
+
 
 @tool
 def useBrowserSearch(instruction: str) -> str:
@@ -100,7 +107,7 @@ def search_recall_memories(query: str, config: RunnableConfig) -> List[str]:
     return [document.page_content for document in documents]
 
 
-tools = [save_recall_memory, search_recall_memories, useBrowserSearch]
+tools = [save_recall_memory, search_recall_memories, useBrowserSearch] + composioTools
 
 
 class State(MessagesState):
@@ -148,6 +155,7 @@ prompt = ChatPromptTemplate.from_messages(
 )
 
 model = ChatOpenAI(model_name="gpt-4o")
+#model = ChatOllama(model="deepseek-r1:14b")
 model_with_tools = model.bind_tools(tools)
 tokenizer = tiktoken.encoding_for_model("gpt-4o")
 

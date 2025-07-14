@@ -9,6 +9,7 @@ import whisper
 import torchaudio as ta
 from chatterbox.tts import ChatterboxTTS
 import soundfile as sf
+from composio_langchain import ComposioToolSet, Action, App
 import tiktoken
 from langchain_core.documents import Document
 from langchain_core.messages import get_buffer_string, AIMessage
@@ -24,7 +25,7 @@ from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PayloadSchemaType
 from browser_use.llm import ChatOpenAI as browserChat
-from browser_use import Agent
+from browser_use import Agent, BrowserSession
 
 
 qdrantClient = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=os.getenv("QDRANT_API_KEY"))
@@ -55,9 +56,11 @@ def get_user_id(config: RunnableConfig) -> str:
 async def browser(task: str):
     agent = Agent(
         task=task,
-        llm=browserChat(model="gpt-4o"), # Adjusted model name for compatibility
+        llm=browserChat(model="gpt-4.1") # Adjusted model name for compatibility
+        #browser_session=browser_session,
     )
-    result = await agent.run()
+    result = await agent.run(
+    max_steps=20)
     return result.final_result()
 
 
@@ -99,8 +102,10 @@ def search_recall_memories(query: str, config: RunnableConfig) -> List[str]:
     )
     return [document.page_content for document in documents]
 
+composio_toolset = ComposioToolSet(os.getenv("COMPOSIO_API_KEY"))
 
-tools = [save_recall_memory, search_recall_memories, useBrowserSearch]
+composioTools = composio_toolset.get_tools(actions=['GOOGLECALENDAR_CREATE_EVENT', 'GOOGLETASKS_LIST_TASK_LISTS','GOOGLETASKS_LIST_TASKS','GOOGLETASKS_CREATE_TASK_LIST','GOOGLETASKS_GET_TASK_LIST', 'GOOGLETASKS_INSERT_TASK', 'GOOGLETASKS_DELETE_TASK', 'GOOGLECALENDAR_GET_CALENDAR'])
+tools = [save_recall_memory, search_recall_memories, useBrowserSearch] + composioTools
 
 
 class State(MessagesState):

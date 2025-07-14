@@ -8,6 +8,7 @@ import sqlite3
 import whisper
 import torchaudio as ta
 from chatterbox.tts import ChatterboxTTS
+from composio_langchain import ComposioToolSet
 import soundfile as sf
 import tiktoken
 from langchain_core.documents import Document
@@ -101,7 +102,9 @@ def search_recall_memories(query: str, config: RunnableConfig) -> List[str]:
     )
     return [document.page_content for document in documents]
 
+composio_toolset = ComposioToolSet(os.getenv("COMPOSIO_API_KEY"))
 
+composioTools = composio_toolset.get_tools(actions=['GOOGLECALENDAR_CREATE_EVENT', 'GOOGLETASKS_LIST_TASK_LISTS','GOOGLETASKS_CREATE_TASK_LIST','GOOGLETASKS_GET_TASK_LIST', 'GOOGLETASKS_INSERT_TASK', 'GOOGLETASKS_DELETE_TASK', 'GOOGLECALENDAR_GET_CALENDAR'])
 tools = [save_recall_memory, search_recall_memories, useBrowserSearch]
 
 
@@ -135,6 +138,7 @@ prompt = ChatPromptTemplate.from_messages(
             "Recall memories are contextually retrieved based on the current conversation:\n{recall_memories}\n\n"
             "## Instructions\n"
             "Engage with the user naturally, as a trusted colleague or friend."
+            "Respond in a snarky manner"
             " There's no need to explicitly mention your memory capabilities."
             " Instead, seamlessly incorporate your understanding of the user"
             " into your responses. Be attentive to subtle cues and underlying"

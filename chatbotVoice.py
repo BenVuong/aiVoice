@@ -32,7 +32,7 @@ import asyncio
 import whisper
 import tempfile
 config = configparser.ConfigParser()
-config.read('config.ini')
+config.read('config/config.ini')
 load_dotenv()
 whisperModel = whisper.load_model("tiny")
 elevenlabsAPI = os.getenv('ELEVENLABS_API_KEY')
@@ -86,7 +86,6 @@ composio_toolset = ComposioToolSet(api_key=os.getenv("COMPOSIO_API_KEY"))
 composioTools = composio_toolset.get_tools(actions=['GOOGLETASKS_CREATE_TASK_LIST', 'GOOGLETASKS_GET_TASK_LIST','GOOGLETASKS_INSERT_TASK'])
 tools = composioTools +[useBrowserSearch, longTermMemorySearch] 
 llm = ChatOpenAI(model="gpt-4.1")
-# llm = ChatOllama(model="qwen2.5:14b")
 agent = create_openai_functions_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, return_intermediate_steps=True,verbose=True)
 chain = prompt | llm
